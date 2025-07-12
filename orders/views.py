@@ -1,18 +1,26 @@
 from rest_framework import viewsets
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.decorators import action
+from rest_framework.response import Response
 from .models import Order
 from .serializers import OrderSerializer
-from .tasks import send_order_sms_task
+from .permissions import IsPharmacistOrAdminOrOwner
 
 class OrderViewSet(viewsets.ModelViewSet):
-    queryset = Order.objects.all()
+    queryset = Order.objects.select_related('patient','prescription','drug').all()
     serializer_class = OrderSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsPharmacistOrAdminOrOwner]
 
-    def perform_create(self, serializer):
-        order = serializer.save()
-        customer = order.customer
-        phone = customer.phone_number  # assumes Customer model has phone_number field
-        message = f"Dear {customer.name}, your order for {order.item} (Amount: {order.amount}) has been placed. Thank you!"
-        # Call Celery task asynchronously
-        send_order_sms_task.delay(phone, message)
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_superuser or user.role == 'pharmacist':
+            return super().get_queryset()
+        if user.role == 'patient':
+            return Order.objects.filter(patient=user)
+        return Order.objects.none()
+
+    @action(detail=False, methods=['get'], url_path='me')
+    def me(self, request):
+        qs = self.get_queryset()
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+
